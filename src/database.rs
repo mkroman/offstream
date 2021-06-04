@@ -1,88 +1,45 @@
 use std::{ops::Deref, path::Path};
 
+use chrono::{DateTime, Utc};
 use log::trace;
 use rusqlite::{params, Connection};
 
-use crate::client::{FilmCountry, FilmGenre, FilmYear, GetFilmResponseStatus};
+use crate::client::{FilmCountry, FilmGenre, FilmYear, GetFilmResponseData, GetFilmResponseStatus};
 use crate::Error;
 
 pub struct Database(Connection);
+
+#[derive(Debug)]
+pub struct FilmStatus {
+    pub film_id: u64,
+    pub status: Option<String>,
+    pub vimeo_id: String,
+    pub greeting_vimeo_id: Option<u64>,
+}
+
+#[derive(Debug)]
+pub struct MissingFilmDownload {
+    pub id: u64,
+    pub title: String,
+    pub original_title: Option<String>,
+    pub director: String,
+    pub production_year: u64,
+}
+
+#[derive(Debug)]
+pub struct FilmDownload {
+    pub id: u64,
+    pub film_id: u64,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub path: String,
+}
 
 /// Opens and initializes a database
 pub fn open<P: AsRef<Path>>(path: P) -> Result<Database, rusqlite::Error> {
     let db = Database::open(path)?;
 
-    db.execute_batch(
-        "
-        PRAGMA foreign_keys = ON;
-        BEGIN;
-
-        CREATE TABLE IF NOT EXISTS films (
-            id INTEGER PRIMARY KEY,
-            title VARCHAR,
-            original_title VARCHAR,
-            director VARCHAR,
-            production_year INTEGER,
-            duration INTEGER,
-            description VARCHAR,
-            age_restriction VARCHAR
-        );
-
-        CREATE TABLE IF NOT EXISTS film_status (
-            film_id INTEGER REFERENCES films (id) ON DELETE CASCADE,
-            status VARCHAR,
-            vimeo_id VARCHAR,
-            greeting_vimeo_id VARCHAR
-        );
-
-        CREATE TABLE IF NOT EXISTS film_thumbnails (
-            id INTEGER PRIMARY KEY,
-            film_id INTEGER REFERENCES films (id) ON DELETE CASCADE,
-            resolution VARCHAR NOT NULL,
-            url VARCHAR NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS countries (
-            id INTEGER PRIMARY KEY,
-            title VARCHAR,
-            code VARCHAR
-        );
-
-        CREATE TABLE IF NOT EXISTS film_countries (
-            film_id INTEGER REFERENCES films (id) ON DELETE CASCADE,
-            country_id INTEGER REFERENCES countries (id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS genres (
-            id INTEGER PRIMARY KEY,
-            identifier VARCHAR,
-            title VARCHAR
-        );
-
-        CREATE TABLE IF NOT EXISTS film_genres (
-            film_id INTEGER REFERENCES films (id) ON DELETE CASCADE,
-            genre_id INTEGER REFERENCES genres (id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS film_competitions (
-            film_id INTEGER REFERENCES films (id) ON DELETE CASCADE,
-            name VARCHAR
-        );
-
-        CREATE TABLE IF NOT EXISTS film_years (
-            id INTEGER NOT NULL,
-            film_id INTEGER REFERENCES films (id) ON DELETE CASCADE,
-            title VARCHAR,
-            product_id VARCHAR
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_film_thumbnails ON film_thumbnails (film_id);
-        CREATE INDEX IF NOT EXISTS idx_genres ON genres (identifier);
-        CREATE INDEX IF NOT EXISTS idx_film_genres ON film_genres (film_id, genre_id);
-
-        COMMIT;
-        ",
-    )?;
+    db.execute_batch(include_str!("init.sql"))?;
 
     Ok(db)
 }
@@ -95,17 +52,7 @@ impl Database {
     }
 
     /// Inserts a new film into the database.
-    pub fn create_film(
-        &self,
-        id: u64,
-        title: Option<&str>,
-        original_title: Option<&str>,
-        director: Option<&str>,
-        production_year: Option<u64>,
-        duration: Option<u64>,
-        description: Option<&str>,
-        age_restriction: Option<&str>,
-    ) -> Result<(), Error> {
+    pub fn create_film(&self, id: u64, film_data: &GetFilmResponseData) -> Result<(), Error> {
         self.execute(
             "
             INSERT INTO films
@@ -115,13 +62,13 @@ impl Database {
             ",
             params!(
                 id,
-                title,
-                original_title,
-                director,
-                production_year,
-                duration,
-                description,
-                age_restriction
+                film_data.title,
+                film_data.original_title,
+                film_data.director,
+                film_data.production_year,
+                film_data.duration,
+                film_data.description,
+                film_data.age_restriction
             ),
         )?;
 
@@ -160,6 +107,24 @@ impl Database {
             .collect::<Vec<_>>();
 
         Ok(thumbs)
+    }
+
+    /// Returns a film status for a given `film_id`.
+    pub fn get_film_status(&self, film_id: u64) -> Result<FilmStatus, Error> {
+        let mut stmt = self.prepare(
+            "SELECT film_id, status, vimeo_id, greeting_vimeo_id
+                FROM film_status
+                WHERE film_id = ?",
+        )?;
+
+        Ok(stmt.query_row([film_id], |row| {
+            Ok(FilmStatus {
+                film_id: row.get(0)?,
+                status: row.get(1)?,
+                vimeo_id: row.get(2)?,
+                greeting_vimeo_id: row.get(3)?,
+            })
+        })?)
     }
 
     /// Creates a new genre.
@@ -373,6 +338,53 @@ impl Database {
                 self.create_country(country.title(), country.code())?;
             }
         }
+
+        Ok(())
+    }
+
+    pub fn get_missing_downloads(&self) -> Result<Vec<MissingFilmDownload>, Error> {
+        let mut stmt = self.prepare(
+            "SELECT f.id, f.title, f.original_title, f.director, f.production_year
+            FROM films AS f
+            LEFT JOIN film_downloads AS dl
+            ON f.id = dl.film_id
+            WHERE dl.id IS NULL OR dl.finished_at IS NULL",
+        )?;
+
+        let res = stmt
+            .query_map([], |row| {
+                Ok(MissingFilmDownload {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    original_title: row.get(2)?,
+                    director: row.get(3)?,
+                    production_year: row.get(4)?,
+                })
+            })?
+            .filter_map(Result::ok)
+            .collect();
+
+        Ok(res)
+    }
+
+    /// Inserts or updates a film download with the given `completed` info.
+    pub fn upsert_film_download(
+        &self,
+        film_id: u64,
+        completed: bool,
+        path: Option<&str>,
+    ) -> Result<(), Error> {
+        let finished_at = if completed { Some(Utc::now()) } else { None };
+
+        self.execute(
+            "
+            REPLACE INTO film_downloads
+            (film_id, finished_at, path)
+            VALUES
+            (?, ?, ?)
+            ",
+            params!(film_id, finished_at, path),
+        )?;
 
         Ok(())
     }

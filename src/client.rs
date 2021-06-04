@@ -123,43 +123,6 @@ pub struct GetFilmResponseData {
     pub competitions: Vec<String>,
 }
 
-impl GetFilmResponseData {
-    /// Returns the films title.
-    pub fn title(&self) -> Option<&str> {
-        self.title.as_deref()
-    }
-
-    /// Returns the films original title.
-    pub fn original_title(&self) -> Option<&str> {
-        self.original_title.as_deref()
-    }
-
-    /// Returns the films director.
-    pub fn director(&self) -> Option<&str> {
-        self.director.as_deref()
-    }
-
-    /// Returns the films production year.
-    pub fn production_year(&self) -> Option<u64> {
-        self.production_year
-    }
-
-    /// Returns the films duration.
-    pub fn duration(&self) -> Option<u64> {
-        self.duration
-    }
-
-    /// Returns the films description.
-    pub fn description(&self) -> Option<&str> {
-        self.description.as_deref()
-    }
-
-    /// Returns the films age restriction.
-    pub fn age_restriction(&self) -> Option<&str> {
-        self.age_restriction.as_deref()
-    }
-}
-
 #[derive(Deserialize, Debug)]
 pub struct GetFilmResponseStatus {
     /// The general status of a response
@@ -195,7 +158,7 @@ impl Client {
     /// Requests a new XSRF token from the API, returning `Ok(())` on success.
     pub async fn update_xsrf_token(&mut self) -> Result<(), Error> {
         let res = self
-            ._get("/csrf-cookie")
+            .build_get("/csrf-cookie")
             .send()
             .await
             .map_err(Error::XsrfTokenRequestFailed)?;
@@ -248,13 +211,13 @@ impl Client {
     /// Returns an error if [`Client::xsrf_token`] is `None`
     pub fn get(&self, path: &str) -> Result<reqwest::RequestBuilder, Error> {
         let xsrf_token = self.xsrf_token.as_ref().ok_or(Error::XsrfTokenMissing)?;
-        let req = self._get(path).header("x-xsrf-token", xsrf_token);
+        let req = self.build_get(path).header("x-xsrf-token", xsrf_token);
 
         Ok(req)
     }
 
     #[inline]
-    fn _get(&self, path: &str) -> reqwest::RequestBuilder {
+    fn build_get(&self, path: &str) -> reqwest::RequestBuilder {
         self.http
             .get(&format!("{}{}", API_BASE_URI, path))
             .header("origin", "https://offstream.dk")

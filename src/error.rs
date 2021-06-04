@@ -22,4 +22,6 @@ pub enum Error {
     HttpRequestFailed(#[from] reqwest::Error),
     #[error("Database error")]
     DatabaseError(#[from] rusqlite::Error),
+    #[error("Youtube-DL error: {0}")]
+    YouTubeDlError(String),
 }
