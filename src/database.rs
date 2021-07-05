@@ -14,7 +14,7 @@ pub struct FilmStatus {
     pub film_id: u64,
     pub status: Option<String>,
     pub vimeo_id: String,
-    pub greeting_vimeo_id: Option<u64>,
+    pub greeting_vimeo_id: Option<String>,
 }
 
 #[derive(Debug)]
