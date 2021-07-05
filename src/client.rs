@@ -106,7 +106,7 @@ impl FilmCountry {
 pub struct FilmYear {
     pub id: u64,
     pub title: Option<String>,
-    pub product_id: Option<String>,
+    pub product_id: Option<u64>,
 }
 
 #[derive(Deserialize, Debug)]

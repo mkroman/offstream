@@ -141,9 +141,10 @@ async fn download_missing_films(db: &Database) -> Result<(), Error> {
     for missing_download in missing_downloads {
         if let Err(err) = download_film(db, &missing_download).await {
             error!(
-                "Could not download film {}: {:?}",
-                missing_download.title, err
+                "Could not download film id={} title={}",
+                missing_download.id, missing_download.title
             );
+            eprintln!("{:?}", eyre::Report::new(err));
         }
     }
 
