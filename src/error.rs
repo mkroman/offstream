@@ -11,7 +11,7 @@ pub enum Error {
     #[error("URL decoding error")]
     UrlDecodeError(#[from] urlencoding::FromUrlEncodingError),
     #[error("JSON deserialization failed")]
-    JsonDeserializationFailed(#[source] serde_json::Error),
+    JsonDeserializationFailed(#[source] serde_path_to_error::Error<serde_json::Error>),
     #[error("JSON serialization failed")]
     JsonSerializationFailed(#[source] serde_json::Error),
     #[error("API error: {0}")]

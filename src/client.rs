@@ -16,7 +16,9 @@ fn json_from_str<'a, T>(s: &'a str) -> Result<T, Error>
 where
     T: Deserialize<'a>,
 {
-    serde_json::from_str(s).map_err(Error::JsonDeserializationFailed)
+    let jd = &mut serde_json::Deserializer::from_str(s);
+
+    serde_path_to_error::deserialize(jd).map_err(Error::JsonDeserializationFailed)
 }
 
 /// Serialize the given data structure as a String of JSON, while wrapping any errors as
@@ -183,7 +185,7 @@ impl Client {
 
         if let Some(film_data) = raw_response.data.into_iter().next().map(|(_, value)| value) {
             Ok(GetFilmResponse {
-                data: serde_json::from_value(film_data)
+                data: serde_path_to_error::deserialize(film_data)
                     .map_err(Error::JsonDeserializationFailed)?,
                 status: raw_response.status,
             })

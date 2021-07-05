@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use clap::Clap;
-use color_eyre::eyre::Error as EyreError;
+use color_eyre::eyre::{self, Error as EyreError};
 use log::{debug, error, info};
 use serde_json::{Map, Value as JsonValue};
 use tokio::process::Command;
@@ -38,7 +38,7 @@ async fn fetch_film(
     client: &Client,
     db: &Database,
     film_data: &Map<String, JsonValue>,
-) -> Option<()> {
+) -> Result<(), Error> {
     debug!(
         "Downloading film {}",
         film_data
@@ -47,8 +47,11 @@ async fn fetch_film(
             .unwrap_or("?")
     );
 
-    let film_id = film_data.get("id").and_then(JsonValue::as_u64)?;
-    let film = client.get_film(film_id).await.ok()?;
+    let film_id = film_data
+        .get("id")
+        .and_then(JsonValue::as_u64)
+        .expect("json data does not have a valid id field");
+    let film = client.get_film(film_id).await?;
     let film_data = &film.data;
 
     // Insert the film into the database
@@ -126,7 +129,7 @@ async fn fetch_film(
         error!("Could not create film status: {:?}", err);
     }
 
-    Some(())
+    Ok(())
 }
 
 /// Downloads all films that we have fetched data for, that aren't already downloaded.
@@ -165,7 +168,10 @@ async fn fetch_films(client: &Client, db: &Database, films: JsonValue) -> Result
 
     for missing_id in missing_film_ids {
         if let Some(object) = data.get(missing_id).and_then(JsonValue::as_object) {
-            fetch_film(client, db, object).await;
+            if let Err(err) = fetch_film(client, db, object).await {
+                error!("Could not fetch the film with id={}", missing_id);
+                eprintln!("{:?}", eyre::Report::new(err));
+            }
 
             sleep(Duration::from_secs(1)).await;
         } else {
