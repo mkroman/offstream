@@ -246,9 +246,9 @@ async fn main() -> Result<(), EyreError> {
     env_logger::init();
     color_eyre::install()?;
 
-    let _opts = cli::Opts::parse();
+    let opts = cli::Opts::parse();
     let mut client = Client::new().unwrap();
-    let db = database::open("test.db")?;
+    let db = database::open(opts.database_path)?;
 
     client.update_xsrf_token().await?;
     // Fetch a list of films
