@@ -1,5 +1,6 @@
 #![allow(clippy::pub_enum_variant_names)]
 
+use std::env;
 use std::path::Path;
 use std::time::Duration;
 
@@ -185,6 +186,7 @@ async fn fetch_films(client: &Client, db: &Database, films: JsonValue) -> Result
 
 async fn download_film(db: &Database, film: &MissingFilmDownload) -> Result<(), Error> {
     let film_status = db.get_film_status(film.id)?;
+
     let vimeo_url = format!(
         "https://player.vimeo.com/video/{}?app_id=122963",
         film_status.vimeo_id
@@ -244,6 +246,11 @@ async fn download_film(db: &Database, film: &MissingFilmDownload) -> Result<(), 
 
 #[tokio::main]
 async fn main() -> Result<(), EyreError> {
+    // Override RUST_LOG with a default setting if it's not set by the user
+    if env::var("RUST_LOG").is_err() {
+        env::set_var("RUST_LOG", "offstream=trace");
+    }
+
     env_logger::init();
     color_eyre::install()?;
 

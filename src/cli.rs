@@ -5,6 +5,6 @@ use clap::Clap;
 #[derive(Clap, Debug)]
 pub struct Opts {
     /// Sets the database path
-    #[clap(short, long, default_value = "films.db", value_name = "FILE")]
+    #[clap(short, long, default_value = "films.db", value_name = "FILE", env)]
     pub database_path: PathBuf,
 }

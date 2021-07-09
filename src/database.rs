@@ -114,7 +114,7 @@ impl Database {
         let mut stmt = self.prepare(
             "SELECT film_id, status, vimeo_id, greeting_vimeo_id
                 FROM film_status
-                WHERE film_id = ?",
+                WHERE film_id = ? AND vimeo_id IS NOT NULL",
         )?;
 
         Ok(stmt.query_row([film_id], |row| {
