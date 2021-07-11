@@ -31,6 +31,7 @@ where
     serde_json::to_string(value).map_err(Error::JsonSerializationFailed)
 }
 
+#[derive(Debug)]
 /// Client interface for offstream.dk
 pub struct Client {
     /// The inner http client

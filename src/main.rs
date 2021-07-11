@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use clap::Clap;
 use color_eyre::eyre::{self, Error as EyreError};
-use log::{debug, error, info};
 use serde_json::{Map, Value as JsonValue};
 use tokio::process::Command;
 use tokio::time::sleep;
+use tracing::{debug, debug_span, error};
 
 mod cli;
 mod client;
@@ -40,25 +40,24 @@ async fn fetch_film(
     db: &Database,
     film_data: &Map<String, JsonValue>,
 ) -> Result<(), Error> {
-    debug!(
-        "Downloading film {}",
-        film_data
-            .get("title")
-            .and_then(JsonValue::as_str)
-            .unwrap_or("?")
-    );
-
     let film_id = film_data
         .get("id")
         .and_then(JsonValue::as_u64)
         .expect("json data does not have a valid id field");
+
+    let span = debug_span!("fetch_film", film_id);
+    let _enter = span.enter();
+
+    debug!(
+        film.title = film_data.get("title").and_then(JsonValue::as_str).unwrap(),
+        film_id, "Fetching film"
+    );
+
     let film = client.get_film(film_id).await?;
     let film_data = &film.data;
 
     // Insert the film into the database
-    if db.create_film(film_id, film_data).is_err() {
-        error!("Could not insert film {}", film_id)
-    }
+    db.create_film(film_id, film_data)?;
 
     // Insert thumbnails into the database
     if !film_data.thumbnails.is_empty() {
@@ -70,10 +69,8 @@ async fn fetch_film(
                 {
                     // Insert the thumbnail
                     match db.create_film_thumbnail(film_id, key, Some(value.as_str())) {
-                        Ok(_) => {
-                            debug!("Added thumbnail for film {}: {} @ {}", film_id, key, value)
-                        }
-                        Err(err) => error!("Could not add thumbnail: {:?}", err),
+                        Ok(_) => {}
+                        Err(err) => error!(?err, "Could not add thumbnail"),
                     }
                 }
             }
@@ -136,16 +133,20 @@ async fn fetch_film(
 /// Downloads all films that we have fetched data for, that aren't already downloaded.
 async fn download_missing_films(db: &Database) -> Result<(), Error> {
     let missing_downloads = db.get_missing_downloads()?;
+    let num_missing_downloads = missing_downloads.len();
 
-    println!("Missing downloads: {:#?}", missing_downloads);
+    if num_missing_downloads > 0 {
+        debug!(num_missing_downloads, "Starting download of missing films");
 
-    for missing_download in missing_downloads {
-        if let Err(err) = download_film(db, &missing_download).await {
-            error!(
-                "Could not download film id={} title={}",
-                missing_download.id, missing_download.title
-            );
-            eprintln!("{:?}", eyre::Report::new(err));
+        for missing_download in missing_downloads {
+            if let Err(err) = download_film(db, &missing_download).await {
+                error!(
+                    film_id = missing_download.id,
+                    film_title = missing_download.title.as_str(),
+                    "Could not download film"
+                );
+                eprintln!("{:?}", eyre::Report::new(err));
+            }
         }
     }
 
@@ -158,7 +159,8 @@ async fn fetch_films(client: &Client, db: &Database, films: JsonValue) -> Result
         .and_then(JsonValue::as_object)
         .ok_or_else(|| Error::ApiError("API response did not include a .data field".to_string()))?;
 
-    debug!("Received a list containing {} films", data.len());
+    let num_films = data.len();
+    debug!("Received a list containing {} films", num_films);
 
     let film_ids: Vec<&str> = data.keys().map(String::as_str).collect();
     let missing_film_ids = film_ids_not_in_db(db, &film_ids)?;
@@ -170,9 +172,13 @@ async fn fetch_films(client: &Client, db: &Database, films: JsonValue) -> Result
 
     for missing_id in missing_film_ids {
         if let Some(object) = data.get(missing_id).and_then(JsonValue::as_object) {
-            if let Err(err) = fetch_film(client, db, object).await {
-                error!("Could not fetch the film with id={}", missing_id);
-                eprintln!("{:?}", eyre::Report::new(err));
+            if let Err(error) = fetch_film(client, db, object).await {
+                error!(
+                    film_id = missing_id,
+                    error = ?error,
+                    "Could not fetch the film"
+                );
+                eprintln!("{:?}", eyre::Report::new(error));
             }
 
             sleep(Duration::from_secs(1)).await;
@@ -200,9 +206,17 @@ async fn download_film(db: &Database, film: &MissingFilmDownload) -> Result<(), 
         .join(filename);
     let output_path_str = output_path.to_string_lossy().into_owned();
 
-    info!(
-        "Downloading {} by {} to {}",
-        film.title, film.director, output_path_str
+    let span = debug_span!(
+        "download_film",
+        film_id = film.id,
+        film_title = film.title.as_str()
+    );
+    let _enter = span.enter();
+
+    debug!(
+        film_director = film.director.as_str(),
+        ?output_path,
+        "Downloading film"
     );
 
     let args = [
@@ -217,8 +231,7 @@ async fn download_film(db: &Database, film: &MissingFilmDownload) -> Result<(), 
         vimeo_url.as_str(),
     ];
 
-    debug!("Running youtube-dl with the following arguments:");
-    debug!("{:?}", args);
+    debug!(?args, "Running youtube-dl");
 
     let mut cmd = Command::new("youtube-dl");
     cmd.args(args.iter());
@@ -251,7 +264,7 @@ async fn main() -> Result<(), EyreError> {
         env::set_var("RUST_LOG", "offstream=trace");
     }
 
-    env_logger::init();
+    tracing_subscriber::fmt::init();
     color_eyre::install()?;
 
     let opts = cli::Opts::parse();

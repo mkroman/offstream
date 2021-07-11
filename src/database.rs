@@ -1,12 +1,13 @@
 use std::{ops::Deref, path::Path};
 
 use chrono::{DateTime, Utc};
-use log::trace;
 use rusqlite::{params, Connection};
+use tracing::{instrument, trace};
 
 use crate::client::{FilmCountry, FilmGenre, FilmYear, GetFilmResponseData, GetFilmResponseStatus};
 use crate::Error;
 
+#[derive(Debug)]
 pub struct Database(Connection);
 
 #[derive(Debug)]
@@ -39,6 +40,7 @@ pub struct FilmDownload {
 pub fn open<P: AsRef<Path>>(path: P) -> Result<Database, rusqlite::Error> {
     let db = Database::open(path)?;
 
+    trace!("Setting up initial SQL");
     db.execute_batch(include_str!("init.sql"))?;
 
     Ok(db)
@@ -52,7 +54,10 @@ impl Database {
     }
 
     /// Inserts a new film into the database.
+    #[instrument(err, skip(self))]
     pub fn create_film(&self, id: u64, film_data: &GetFilmResponseData) -> Result<(), Error> {
+        trace!("Creating film entry");
+
         self.execute(
             "
             INSERT INTO films
@@ -76,12 +81,15 @@ impl Database {
     }
 
     /// Inserts a new thumbnail into the database.
+    #[instrument(err, skip(self))]
     pub fn create_film_thumbnail(
         &self,
         film_id: u64,
         resolution: &str,
         url: Option<&str>,
     ) -> Result<(), Error> {
+        trace!("Creating thumbnail entry");
+
         self.execute(
             "
             INSERT INTO film_thumbnails
@@ -96,9 +104,13 @@ impl Database {
     }
 
     /// Returns a list of thumbnails in the tuple format `(resolution, url)` if any.
+    #[instrument(err, skip(self))]
     pub fn get_film_thumbnails(&self, film_id: u64) -> Result<Vec<(String, String)>, Error> {
+        trace!("Querying for film thumbnails");
+
         let mut stmt =
             self.prepare("SELECT resolution, url FROM film_thumbnails WHERE film_id = ?")?;
+
         let thumbs = stmt
             .query_map([film_id], |row| -> Result<(_, _), _> {
                 Ok((row.get(0)?, row.get(1)?))
@@ -106,29 +118,41 @@ impl Database {
             .filter_map(Result::ok)
             .collect::<Vec<_>>();
 
+        trace!(res = ?thumbs);
+
         Ok(thumbs)
     }
 
     /// Returns a film status for a given `film_id`.
+    #[instrument(err, skip(self))]
     pub fn get_film_status(&self, film_id: u64) -> Result<FilmStatus, Error> {
+        trace!("Querying for film status");
+
         let mut stmt = self.prepare(
             "SELECT film_id, status, vimeo_id, greeting_vimeo_id
                 FROM film_status
                 WHERE film_id = ? AND vimeo_id IS NOT NULL",
         )?;
 
-        Ok(stmt.query_row([film_id], |row| {
+        let res = stmt.query_row([film_id], |row| {
             Ok(FilmStatus {
                 film_id: row.get(0)?,
                 status: row.get(1)?,
                 vimeo_id: row.get(2)?,
                 greeting_vimeo_id: row.get(3)?,
             })
-        })?)
+        })?;
+
+        trace!(result = ?res);
+
+        Ok(res)
     }
 
     /// Creates a new genre.
+    #[instrument(err, skip(self))]
     pub fn create_genre(&self, id: &str, title: &str) -> Result<(), Error> {
+        trace!("Creating genre entry");
+
         self.execute(
             "
             INSERT INTO genres
@@ -143,7 +167,10 @@ impl Database {
     }
 
     /// Creates a new country.
+    #[instrument(err, skip(self))]
     pub fn create_country(&self, title: &str, code: &str) -> Result<(), Error> {
+        trace!("Creating country entry");
+
         self.execute(
             "
             INSERT INTO countries
@@ -154,27 +181,31 @@ impl Database {
             [title, code],
         )?;
 
+        trace!(id = self.last_insert_rowid());
+
         Ok(())
     }
 
     /// Returns a genres id, given its identifier.
+    #[instrument(err, skip(self))]
     pub fn get_genre(&self, identifier: &str) -> Result<Option<u64>, Error> {
+        trace!("Querying for genre");
+
         let id = self.query_row(
             "SELECT id FROM genres WHERE identifier = ?",
             [identifier],
             |row| row.get(0),
         )?;
 
+        trace!(result = ?id);
+
         Ok(id)
     }
 
     /// Creates an association between a film and a genre.
+    #[instrument(err, skip(self))]
     pub fn create_film_genre(&self, film_id: u64, genre_id: u64) -> Result<(), Error> {
-        trace!(
-            "Creating genre association between film_id={} and genre_id={}",
-            film_id,
-            genre_id
-        );
+        trace!("Creating genre and film association");
 
         self.execute(
             "
@@ -190,21 +221,23 @@ impl Database {
     }
 
     /// Returns a countrys id, given its code.
+    #[instrument(err, skip(self))]
     pub fn get_country(&self, code: &str) -> Result<Option<u64>, Error> {
+        trace!("Querying for country");
+
         let id = self.query_row("SELECT id FROM countries WHERE code = ?", [code], |row| {
             row.get(0)
         })?;
+
+        trace!(result = ?id);
 
         Ok(id)
     }
 
     /// Creates an association between a film and a country.
+    #[instrument(err, skip(self))]
     pub fn create_film_country(&self, film_id: u64, country_id: u64) -> Result<(), Error> {
-        trace!(
-            "Creating country association between film_id={} and country_id={}",
-            film_id,
-            country_id
-        );
+        trace!("Creating country and film association");
 
         self.execute(
             "
@@ -220,12 +253,9 @@ impl Database {
     }
 
     /// Creates an association between a film and a country.
+    #[instrument(err, skip(self))]
     pub fn create_film_year(&self, film_id: u64, year: &FilmYear) -> Result<(), Error> {
-        trace!(
-            "Creating film year for film_id={}, year={:?}",
-            film_id,
-            year
-        );
+        trace!("Creating film year",);
 
         self.execute(
             "
@@ -241,16 +271,13 @@ impl Database {
     }
 
     /// Creates a film status for a given `film_id`.
+    #[instrument(err, skip(self))]
     pub fn create_film_status(
         &self,
         film_id: u64,
         status: &GetFilmResponseStatus,
     ) -> Result<(), Error> {
-        trace!(
-            "Creating film status for film_id={}, status={:?}",
-            film_id,
-            status
-        );
+        trace!("Creating film status");
 
         self.execute(
             "
@@ -271,12 +298,9 @@ impl Database {
     }
 
     /// Creates a film competition for a given `film_id`.
+    #[instrument(err, skip(self))]
     pub fn create_film_competition(&self, film_id: u64, competition: &str) -> Result<(), Error> {
-        trace!(
-            "Creating film competition {} for film_id={}",
-            competition,
-            film_id,
-        );
+        trace!("Creating film competition");
 
         self.execute(
             "
@@ -303,9 +327,9 @@ impl Database {
         for genre in genres.iter() {
             if !existing_genres.iter().any(|x| x == &genre.id) {
                 trace!(
-                    "Creating new genre (id={}, title={})",
-                    genre.id,
-                    genre.title
+                    genre.id = genre.id.as_str(),
+                    genre.title = genre.title.as_str(),
+                    "Creating new genre"
                 );
 
                 self.create_genre(genre.id(), genre.title())?;
@@ -330,9 +354,9 @@ impl Database {
         for country in countries.iter() {
             if !existing_countries.iter().any(|x| x == &country.code) {
                 trace!(
-                    "Creating new country (title={}, code={})",
-                    country.title,
-                    country.code
+                    country.title = country.title.as_str(),
+                    country.code = country.title.as_str(),
+                    "Creating new country entry since it's not already present"
                 );
 
                 self.create_country(country.title(), country.code())?;

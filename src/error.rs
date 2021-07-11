@@ -20,7 +20,7 @@ pub enum Error {
     HttpClientFailed(#[source] reqwest::Error),
     #[error("HTTP request failed: {0}")]
     HttpRequestFailed(#[from] reqwest::Error),
-    #[error("Database error")]
+    #[error("Database error: {0}")]
     DatabaseError(#[from] rusqlite::Error),
     #[error("Youtube-DL error: {0}")]
     YouTubeDlError(String),
