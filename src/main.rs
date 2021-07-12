@@ -9,7 +9,8 @@ use color_eyre::eyre::{self, Error as EyreError};
 use serde_json::{Map, Value as JsonValue};
 use tokio::process::Command;
 use tokio::time::sleep;
-use tracing::{debug, debug_span, error};
+use tracing::{debug, debug_span, error, instrument, trace};
+use tracing_subscriber::layer::SubscriberExt;
 
 mod cli;
 mod client;
@@ -35,24 +36,15 @@ fn film_ids_not_in_db<'a>(db: &Database, film_ids: &[&'a str]) -> Result<Vec<&'a
     Ok(res)
 }
 
+#[instrument(skip(client, db), err)]
 async fn fetch_film(
     client: &Client,
     db: &Database,
     film_data: &Map<String, JsonValue>,
 ) -> Result<(), Error> {
-    let film_id = film_data
-        .get("id")
-        .and_then(JsonValue::as_u64)
-        .expect("json data does not have a valid id field");
+    let film_id = film_data.get("id").and_then(JsonValue::as_u64).unwrap();
 
-    let span = debug_span!("fetch_film", film_id);
-    let _enter = span.enter();
-
-    debug!(
-        film.title = film_data.get("title").and_then(JsonValue::as_str).unwrap(),
-        film_id, "Fetching film"
-    );
-
+    debug!("Getting film details");
     let film = client.get_film(film_id).await?;
     let film_data = &film.data;
 
@@ -131,6 +123,7 @@ async fn fetch_film(
 }
 
 /// Downloads all films that we have fetched data for, that aren't already downloaded.
+#[instrument(skip(db))]
 async fn download_missing_films(db: &Database) -> Result<(), Error> {
     let missing_downloads = db.get_missing_downloads()?;
     let num_missing_downloads = missing_downloads.len();
@@ -153,6 +146,7 @@ async fn download_missing_films(db: &Database) -> Result<(), Error> {
     Ok(())
 }
 
+#[instrument(skip(client, db, films), err)]
 async fn fetch_films(client: &Client, db: &Database, films: JsonValue) -> Result<(), Error> {
     let data = films
         .get("data")
@@ -190,6 +184,7 @@ async fn fetch_films(client: &Client, db: &Database, films: JsonValue) -> Result
     Ok(())
 }
 
+#[instrument(skip(db), err)]
 async fn download_film(db: &Database, film: &MissingFilmDownload) -> Result<(), Error> {
     let film_status = db.get_film_status(film.id)?;
 
@@ -257,21 +252,51 @@ async fn download_film(db: &Database, film: &MissingFilmDownload) -> Result<(), 
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<(), EyreError> {
-    // Override RUST_LOG with a default setting if it's not set by the user
-    if env::var("RUST_LOG").is_err() {
-        env::set_var("RUST_LOG", "offstream=trace");
+#[instrument]
+fn init_tracing(jaeger_opts: cli::JaegerOpts) -> Result<(), EyreError> {
+    if jaeger_opts.enabled {
+        // Install a new OpenTelemetry trace pipeline
+        let tracer = opentelemetry_jaeger::new_pipeline()
+            .with_service_name(jaeger_opts.service_name)
+            .install_batch(opentelemetry::runtime::Tokio)?;
+
+        // Create a tracing layer with the configured tracer
+        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+        let collector = tracing_subscriber::Registry::default().with(telemetry);
+
+        tracing::subscriber::set_global_default(collector)
+            .expect("Unable to set a global collector");
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .pretty()
+            .init();
     }
 
-    tracing_subscriber::fmt::init();
+    let build = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    trace!(build, version = env!("CARGO_PKG_VERSION"), "init");
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), EyreError> {
     color_eyre::install()?;
 
     let opts = cli::Opts::parse();
-    let mut client = Client::new().unwrap();
+
+    // Set up stdout or jaeger tracing
+    init_tracing(opts.jaeger_opts)?;
+
     let db = database::open(opts.database_path)?;
+    let mut client = Client::new().unwrap();
 
     client.update_xsrf_token().await?;
+
     // Fetch a list of films
     let films = client.get_films().await?;
 

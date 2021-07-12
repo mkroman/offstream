@@ -346,7 +346,7 @@ impl Database {
         let existing_countries: Vec<String> = countries
             .iter()
             .map(|country| -> Result<String, _> {
-                stmt.query_row([country.code()], |row| row.get(0))
+                stmt.query_row([country.code()], |row| row.get(1))
             })
             .filter_map(Result::ok)
             .collect();

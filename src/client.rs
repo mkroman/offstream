@@ -3,6 +3,7 @@ use std::{collections::HashMap, ops::Deref};
 use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::{instrument, trace};
 use urlencoding::decode as url_decode;
 
 use crate::Error;
@@ -159,6 +160,7 @@ impl Client {
     }
 
     /// Requests a new XSRF token from the API, returning `Ok(())` on success.
+    #[instrument]
     pub async fn update_xsrf_token(&mut self) -> Result<(), Error> {
         let res = self
             .build_get("/csrf-cookie")
@@ -173,12 +175,16 @@ impl Client {
             .map(|x| x.value().to_owned())
         {
             self.xsrf_token = Some(url_decode(&xsrf)?);
+
+            trace!(?self.xsrf_token, "Updated XSRF token");
         } else {
             return Err(Error::InvalidXsrfToken);
         }
 
         Ok(())
     }
+
+    #[instrument]
     pub async fn get_film(&self, film_id: u64) -> Result<GetFilmResponse, Error> {
         let data = json_to_string(&json!({ "film_id": film_id }))?;
         let response = self.post("/films/load")?.body(data).send().await?;
@@ -198,6 +204,7 @@ impl Client {
     }
 
     /// Requests and returns a complete list of films.
+    #[instrument]
     pub async fn get_films(&self) -> Result<serde_json::Value, Error> {
         let res = self.get("/films")?.send().await?;
         let body = res.text().await?;
@@ -212,6 +219,7 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if [`Client::xsrf_token`] is `None`
+    #[instrument(skip(path), fields(http.path = path))]
     pub fn get(&self, path: &str) -> Result<reqwest::RequestBuilder, Error> {
         let xsrf_token = self.xsrf_token.as_ref().ok_or(Error::XsrfTokenMissing)?;
         let req = self.build_get(path).header("x-xsrf-token", xsrf_token);
