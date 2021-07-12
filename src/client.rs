@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use tracing::{instrument, trace};
 use urlencoding::decode as url_decode;
 
-use crate::Error;
+use crate::{error::ErrorKind, Error};
 
 const API_BASE_URI: &str = "https://api.offstream.dk";
 
@@ -19,7 +19,8 @@ where
 {
     let jd = &mut serde_json::Deserializer::from_str(s);
 
-    serde_path_to_error::deserialize(jd).map_err(Error::JsonDeserializationFailed)
+    serde_path_to_error::deserialize(jd)
+        .map_err(|err| Error::from(ErrorKind::JsonDeserializationFailed(err)))
 }
 
 /// Serialize the given data structure as a String of JSON, while wrapping any errors as
@@ -29,7 +30,7 @@ fn json_to_string<T>(value: &T) -> Result<String, Error>
 where
     T: ?Sized + Serialize,
 {
-    serde_json::to_string(value).map_err(Error::JsonSerializationFailed)
+    serde_json::to_string(value).map_err(|err| Error::from(ErrorKind::JsonSerializationFailed(err)))
 }
 
 #[derive(Debug)]
@@ -149,7 +150,7 @@ impl Client {
             .redirect(Policy::none())
             .cookie_store(true)
             .build()
-            .map_err(Error::HttpClientFailed)?;
+            .map_err(|err| Error::from(ErrorKind::HttpClientFailed(err)))?;
 
         let client = Client {
             http: http_client,
@@ -166,7 +167,7 @@ impl Client {
             .build_get("/csrf-cookie")
             .send()
             .await
-            .map_err(Error::XsrfTokenRequestFailed)?;
+            .map_err(|err| Error::from(ErrorKind::XsrfTokenRequestFailed(err)))?;
 
         // Extract the CSRF token
         if let Some(xsrf) = res
@@ -178,7 +179,7 @@ impl Client {
 
             trace!(?self.xsrf_token, "Updated XSRF token");
         } else {
-            return Err(Error::InvalidXsrfToken);
+            return Err(Error::from(ErrorKind::InvalidXsrfToken));
         }
 
         Ok(())
@@ -193,13 +194,13 @@ impl Client {
         if let Some(film_data) = raw_response.data.into_iter().next().map(|(_, value)| value) {
             Ok(GetFilmResponse {
                 data: serde_path_to_error::deserialize(film_data)
-                    .map_err(Error::JsonDeserializationFailed)?,
+                    .map_err(|err| Error::from(ErrorKind::JsonDeserializationFailed(err)))?,
                 status: raw_response.status,
             })
         } else {
-            Err(Error::ApiError(
+            Err(Error::from(ErrorKind::ApiError(
                 "Could not deserialize film .data object".to_string(),
-            ))
+            )))
         }
     }
 
@@ -221,7 +222,10 @@ impl Client {
     /// Returns an error if [`Client::xsrf_token`] is `None`
     #[instrument(skip(path), fields(http.path = path))]
     pub fn get(&self, path: &str) -> Result<reqwest::RequestBuilder, Error> {
-        let xsrf_token = self.xsrf_token.as_ref().ok_or(Error::XsrfTokenMissing)?;
+        let xsrf_token = self
+            .xsrf_token
+            .as_ref()
+            .ok_or_else(|| Error::from(ErrorKind::XsrfTokenMissing))?;
         let req = self.build_get(path).header("x-xsrf-token", xsrf_token);
 
         Ok(req)
@@ -241,7 +245,10 @@ impl Client {
     /// # Errors
     /// Returns an error if [`Client::xsrf_token`] is `None`
     pub fn post(&self, path: &str) -> Result<reqwest::RequestBuilder, Error> {
-        let xsrf_token = self.xsrf_token.as_ref().ok_or(Error::XsrfTokenMissing)?;
+        let xsrf_token = self
+            .xsrf_token
+            .as_ref()
+            .ok_or_else(|| Error::from(ErrorKind::XsrfTokenMissing))?;
 
         let req = self
             .http

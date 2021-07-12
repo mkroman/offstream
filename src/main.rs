@@ -10,6 +10,7 @@ use serde_json::{Map, Value as JsonValue};
 use tokio::process::Command;
 use tokio::time::sleep;
 use tracing::{debug, debug_span, error, instrument, trace};
+use tracing_error::ErrorLayer;
 use tracing_subscriber::layer::SubscriberExt;
 
 mod cli;
@@ -19,7 +20,7 @@ mod error;
 
 use client::Client;
 use database::{Database, MissingFilmDownload};
-use error::Error;
+use error::{Error, ErrorKind};
 
 /// Given a list of `film_ids`, this will return a new list that only consists of id's not
 /// currently present in the database.
@@ -151,7 +152,11 @@ async fn fetch_films(client: &Client, db: &Database, films: JsonValue) -> Result
     let data = films
         .get("data")
         .and_then(JsonValue::as_object)
-        .ok_or_else(|| Error::ApiError("API response did not include a .data field".to_string()))?;
+        .ok_or_else(|| {
+            Error::from(ErrorKind::ApiError(
+                "API response did not include a .data field".to_string(),
+            ))
+        })?;
 
     let num_films = data.len();
     debug!("Received a list containing {} films", num_films);
@@ -235,7 +240,12 @@ async fn download_film(db: &Database, film: &MissingFilmDownload) -> Result<(), 
 
     let res = cmd
         .spawn()
-        .map_err(|e| Error::YouTubeDlError(format!("Could not create process: {}", e)))?
+        .map_err(|err| {
+            Error::from(ErrorKind::YouTubeDlError(format!(
+                "Could not create process: {}",
+                err
+            )))
+        })?
         .wait()
         .await;
 
@@ -252,7 +262,6 @@ async fn download_film(db: &Database, film: &MissingFilmDownload) -> Result<(), 
     Ok(())
 }
 
-#[instrument]
 fn init_tracing(jaeger_opts: cli::JaegerOpts) -> Result<(), EyreError> {
     if jaeger_opts.enabled {
         // Install a new OpenTelemetry trace pipeline
@@ -262,7 +271,9 @@ fn init_tracing(jaeger_opts: cli::JaegerOpts) -> Result<(), EyreError> {
 
         // Create a tracing layer with the configured tracer
         let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-        let collector = tracing_subscriber::Registry::default().with(telemetry);
+        let collector = tracing_subscriber::Registry::default()
+            .with(ErrorLayer::default())
+            .with(telemetry);
 
         tracing::subscriber::set_global_default(collector)
             .expect("Unable to set a global collector");
@@ -299,6 +310,7 @@ async fn main() -> Result<(), EyreError> {
 
     // Fetch a list of films
     let films = client.get_films().await?;
+    trace!(?films, "Retrieved list of films");
 
     // Fetch all missing films
     fetch_films(&client, &db, films).await?;

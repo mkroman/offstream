@@ -1,7 +1,32 @@
+use std::fmt;
+
 use thiserror::Error;
+use tracing_error::TracedError;
 
 #[derive(Debug, Error)]
-pub enum Error {
+pub struct Error {
+    source: TracedError<ErrorKind>,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.source, fmt)
+    }
+}
+
+impl<E> From<E> for Error
+where
+    ErrorKind: From<E>,
+{
+    fn from(source: E) -> Self {
+        Self {
+            source: ErrorKind::from(source).into(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ErrorKind {
     #[error("Missing a valid XSRF token")]
     XsrfTokenMissing,
     #[error("Could not request a new XSRF token")]
